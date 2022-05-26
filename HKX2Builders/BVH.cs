@@ -20,25 +20,48 @@ namespace HKX2Builders
         public BVNode Right;
         private uint UniqueIndicesCount;
 
+
         public static List<BVNode> BuildBVHForMesh(Vector3[] vertices, uint[] indices, int indicesCount)
         {
             if (!BVHNative.BuildBVHForMesh(vertices, indices, indicesCount)) throw new Exception("Couldn't build BVH!");
 
-            return BuildFriendlyBVH();
+            var nodes = new NativeBVHNode[BVHNative.GetBVHSize()];
+            BVHNative.GetBVHNodes(nodes);
+            return BuildFriendlyBVH(nodes);
         }
 
         public static List<BVNode> BuildBVHForDomains(Vector3[] domains, int domainCount)
         {
             if (!BVHNative.BuildBVHForDomains(domains, domainCount)) throw new Exception("Couldn't build BVH!");
 
-            return BuildFriendlyBVH();
-        }
-
-        private static List<BVNode> BuildFriendlyBVH()
-        {
             var nodes = new NativeBVHNode[BVHNative.GetBVHSize()];
             BVHNative.GetBVHNodes(nodes);
+            return BuildFriendlyBVH(nodes);
+        }
 
+        public static List<BVNode> GetLeafNodes(BVNode node)
+        {
+            List<BVNode> leaves = new List<BVNode>((int)node.PrimitiveCount);
+
+            if (node.IsLeaf)
+            {
+                leaves.Add(node);
+                return leaves;
+            }
+            else if (node.Left == null && node.Right == null) // If this is a not-yet-populated non-leaf node
+            {
+                return new List<BVNode>();
+            }
+            else
+            {
+                leaves.AddRange(GetLeafNodes(node.Left));
+                leaves.AddRange(GetLeafNodes(node.Right));
+                return leaves;
+            }
+        }
+
+        private static List<BVNode> BuildFriendlyBVH(NativeBVHNode[] nodes)
+        {
             // Rebuild in friendlier tree form
             var bnodes = nodes.Select(n => new BVNode
             {
@@ -49,7 +72,7 @@ namespace HKX2Builders
                 Primitive = n.firstChildOrPrimitive
             }).ToList();
 
-            for (var i = 0; i < nodes.Length; i++)
+            for (int i = 0; i < nodes.Length; i++)
             {
                 if (nodes[i].isLeaf) continue;
                 bnodes[i].Left = bnodes[(int) nodes[i].firstChildOrPrimitive];
@@ -57,6 +80,72 @@ namespace HKX2Builders
             }
 
             return bnodes;
+        }
+
+        public static BVNode TransformBvh(BVNode original, Matrix4x4 transform)
+        {
+            BVNode res = original;
+
+            res.Min = Vector3.Transform(original.Min, transform);
+            res.Max = Vector3.Transform(original.Max, transform);
+
+            if (!res.IsLeaf)
+            {
+                res.Left = TransformBvh(original.Left, transform);
+                res.Right = TransformBvh(original.Right, transform);
+            }
+
+            return res;
+        }
+
+        public static BVNode InsertLeafs(BVNode node, List<BVNode> addition)
+        {
+            List<BVNode> leaves = GetLeafNodes(node);
+            leaves.AddRange(addition);
+
+            // Get our domains for our leaf nodes and get new nodes from that
+            List<Vector3> domains = new List<Vector3>(leaves.Count * 2);
+            
+            foreach (BVNode leafNode in leaves)
+            {
+                domains.Add(leafNode.Min);
+                domains.Add(leafNode.Max);
+            }
+
+            if (!BVHNative.BuildBVHForDomains(domains.ToArray(), leaves.Count)) throw new Exception("Couldn't build BVH!");
+            var nativeNodes = new NativeBVHNode[BVHNative.GetBVHSize()];
+            BVHNative.GetBVHNodes(nativeNodes);
+
+            // Set the primitives again and link nodes up
+            var newNodes = nativeNodes.Select(n => new BVNode
+            {
+                Min = new Vector3(n.minX, n.minY, n.minZ),
+                Max = new Vector3(n.maxX, n.maxY, n.maxZ),
+                IsLeaf = n.isLeaf,
+                PrimitiveCount = n.primitiveCount,
+                Primitive = n.firstChildOrPrimitive
+            }).ToList();
+
+            foreach (BVNode newNode in newNodes)
+            {
+                if (newNode.IsLeaf)
+                {
+                    BVNode matchingLeaf = leaves.Find(x => x.Min == newNode.Min && x.Max == newNode.Max);
+                    newNode.Primitive = matchingLeaf.Primitive;
+                }
+            }
+            for (int i = 0; i < nativeNodes.Length; i++)
+            {
+                if (nativeNodes[i].isLeaf) continue;
+                newNodes[i].Left = newNodes[(int)nativeNodes[i].firstChildOrPrimitive];
+                newNodes[i].Right = newNodes[(int)nativeNodes[i].firstChildOrPrimitive + 1];
+            }
+
+            // Set our primtive counts
+            newNodes[0].ComputePrimitiveCounts();
+
+            // Return our BVH
+            return newNodes[0];
         }
 
         public uint ComputePrimitiveCounts()

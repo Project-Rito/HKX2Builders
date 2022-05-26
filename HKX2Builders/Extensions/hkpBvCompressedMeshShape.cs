@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Numerics;
+using System.Collections.Generic;
+using System.Linq;
 using HKX2;
 
 namespace HKX2Builders.Extensions
@@ -26,11 +28,11 @@ namespace HKX2Builders.Extensions
 
     public static partial class Extensions
     {
-        private static BVHNode BuildBvhTree(this hkpBvCompressedMeshShape _this, Vector3 parentBBMin,
+        private static BVNode BuildBvhTree(this hkpBvCompressedMeshShape _this, Vector3 parentBBMin,
             Vector3 parentBBMax, uint nodeIndex)
         {
             var cnode = _this.m_tree.m_nodes[(int) nodeIndex];
-            var node = new BVHNode
+            var node = new BVNode
             {
                 Min = cnode.DecompressMin(parentBBMin, parentBBMax),
                 Max = cnode.DecompressMax(parentBBMin, parentBBMax)
@@ -44,19 +46,21 @@ namespace HKX2Builders.Extensions
             }
             else
             {
-                node.IsTerminal = true;
-                node.Index = (((uint) cnode.m_hiData & 0x7F) << 8) | cnode.m_loData;
+                node.IsLeaf = true;
+                node.Primitive = (((uint) cnode.m_hiData & 0x7F) << 8) | cnode.m_loData;
+
+                node.PrimitiveCount = 1;
             }
 
             return node;
         }
 
         // Extracts an easily processable BVH tree from the packed version in the mesh data
-        public static BVHNode GetMeshBvh(this hkpBvCompressedMeshShape _this)
+        public static BVNode GetMeshBvh(this hkpBvCompressedMeshShape _this)
         {
             if (_this.m_tree.m_nodes == null || _this.m_tree.m_nodes.Count == 0) return null;
 
-            var root = new BVHNode
+            var root = new BVNode
             {
                 Min = new Vector3(_this.m_tree.m_domain.m_min.X, _this.m_tree.m_domain.m_min.Y,
                     _this.m_tree.m_domain.m_min.Z),
@@ -70,11 +74,15 @@ namespace HKX2Builders.Extensions
                 root.Left = BuildBvhTree(_this, root.Min, root.Max, 1);
                 root.Right = BuildBvhTree(_this, root.Min, root.Max,
                     ((((uint) cnode.m_hiData & 0x7F) << 8) | cnode.m_loData) * 2);
+
+                root.PrimitiveCount = root.ComputePrimitiveCounts();
             }
             else
             {
-                root.IsTerminal = true;
-                root.Index = (((uint) cnode.m_hiData & 0x7F) << 8) | cnode.m_loData;
+                root.IsLeaf = true;
+                root.Primitive = (((uint) cnode.m_hiData & 0x7F) << 8) | cnode.m_loData;
+
+                root.PrimitiveCount = 1;
             }
 
             return root;
@@ -84,5 +92,62 @@ namespace HKX2Builders.Extensions
         {
             return _this.m_tree.m_domain;
         }
+
+        public static MeshContainer ToMesh(this hkpBvCompressedMeshShape _this)
+        {
+            var sections = new List<MeshSection>();
+            var domain = new Domain(_this.m_tree.m_domain.m_min, _this.m_tree.m_domain.m_max);
+            var sharedVerts = _this.m_tree.m_sharedVertices.Select(vtx2 => new SharedVertex(vtx2).Decompress(domain))
+                .ToList();
+
+            foreach (var sec in _this.m_tree.m_sections)
+            {
+                var s = new MeshSection
+                {
+                    Domain = new Domain(sec.m_domain.m_min, sec.m_domain.m_max),
+                    Vertices = new List<Vector4>(),
+                    Primitives = new List<List<byte>>()
+                };
+                sections.Add(s);
+                var offset = new Vector3(sec.m_codecParms_0, sec.m_codecParms_1, sec.m_codecParms_2);
+                var scale = new Vector3(sec.m_codecParms_3, sec.m_codecParms_4, sec.m_codecParms_5);
+                var sharedVtxIndexStart = sec.m_sharedVertices.m_data >> 8;
+                var primitiveStart = sec.m_primitives.m_data >> 8;
+                var primitiveCount = sec.m_primitives.m_data & 0xFFu;
+                foreach (var vtx in new ArraySegment<uint>(_this.m_tree.m_packedVertices.ToArray(),
+                    (int)sec.m_firstPackedVertex, sec.m_numPackedVertices))
+                    s.Vertices.Add(new PackedVertex(vtx).Decompress(offset, scale));
+
+                foreach (var idx in new ArraySegment<ushort>(_this.m_tree.m_sharedVerticesIndex.ToArray(),
+                    (int)sharedVtxIndexStart, sec.m_numSharedIndices))
+                    s.Vertices.Add(sharedVerts[idx]);
+
+                foreach (var primitive2 in new
+                    ArraySegment<hkcdStaticMeshTreeBasePrimitive>(_this.m_tree.m_primitives.ToArray(),
+                        (int)primitiveStart,
+                        (int)primitiveCount))
+                    s.Primitives.Add(new List<byte>
+                    {
+                        primitive2.m_indices_0, primitive2.m_indices_1, primitive2.m_indices_2, primitive2.m_indices_3
+                    });
+            }
+
+            var cont = new MeshContainer(_this.GetType().Name);
+            var vtxCount = 0;
+            foreach (var sec in sections)
+            {
+                cont.Vertices.AddRange(sec.Vertices);
+                var primitives = sec.Primitives.Select(primitive => new List<int>
+                {
+                    primitive[0] + vtxCount, primitive[1] + vtxCount, primitive[2] + vtxCount, primitive[3] + vtxCount
+                }).ToList();
+
+                cont.Primitives.AddRange(primitives);
+                vtxCount += sec.Vertices.Count;
+            }
+
+            return cont;
+        }
+
     }
 }
