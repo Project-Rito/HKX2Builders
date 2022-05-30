@@ -1,6 +1,6 @@
 [submodule "lib/HKX2Library"]
 	path = lib/HKX2Library
-	url = https://gitlab.com/HKX2/HKX2Library
+	url = https://github.com/Project-Rito/HKX2Library
 [submodule "lib/libNavGen"]
 	path = lib/libNavGen
 	url = https://gitlab.com/HKX2/libNavGen
