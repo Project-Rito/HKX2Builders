@@ -3,4 +3,4 @@
 	url = https://github.com/Project-Rito/HKX2Library
 [submodule "lib/libNavGen"]
 	path = lib/libNavGen
-	url = https://gitlab.com/HKX2/libNavGen
+	url = https://github.com/Project-Rito/libNavGen
