@@ -2,30 +2,26 @@
 
     <PropertyGroup>
         <TargetFramework>net5.0</TargetFramework>
+        <Platforms>AnyCPU;x64;x86</Platforms>
     </PropertyGroup>
+  
+    <ItemGroup>
+        <ProjectReference Include="..\lib\HKX2Library\HKX2\HKX2.csproj" />
+    </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\lib\HKX2Library\HKX2\HKX2.csproj"/>
-
-        <Content Include="..\lib\libNavGen\compiled\libNavGen.so">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
-        <Content Include="..\lib\libNavGen\compiled\libNavGen.dll">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
-
-        <Content Include="..\lib\libNavGen\compiled\libgcc_s_seh-1.dll">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
-        <Content Include="..\lib\libNavGen\compiled\libgomp-1.dll">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
-        <Content Include="..\lib\libNavGen\compiled\libstdc++-6.dll">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
-        <Content Include="..\lib\libNavGen\compiled\libwinpthread-1.dll">
-            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-        </Content>
+      <None Update="x64\libNavGen.dll" Condition="'$(Platform)'=='x64' or '$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <Link>%(Filename)%(Extension)</Link>
+      </None>
+      <None Update="x64\libNavGen.so" Condition="'$(Platform)'=='x64' or '$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <Link>%(Filename)%(Extension)</Link>
+      </None>
+      <None Update="x86\libNavGen.dll" Condition="'$(Platform)'=='x86' or '$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <Link>%(Filename)%(Extension)</Link>
+      </None>
     </ItemGroup>
 
 </Project>
