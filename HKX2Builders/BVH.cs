@@ -113,27 +113,31 @@ namespace HKX2Builders
             }
 
             if (!BVHNative.BuildBVHForDomains(domains.ToArray(), leaves.Count)) throw new Exception("Couldn't build BVH!");
-            var nativeNodes = new NativeBVHNode[BVHNative.GetBVHSize()];
+            NativeBVHNode[] nativeNodes = new NativeBVHNode[BVHNative.GetBVHSize()];
             BVHNative.GetBVHNodes(nativeNodes);
 
             // Set the primitives again and link nodes up
-            var newNodes = nativeNodes.Select(n => new BVNode
+            List<BVNode> newNodes = new List<BVNode>(nativeNodes.Length);
+            foreach (NativeBVHNode nativeNode in nativeNodes)
             {
-                Min = new Vector3(n.minX, n.minY, n.minZ),
-                Max = new Vector3(n.maxX, n.maxY, n.maxZ),
-                IsLeaf = n.isLeaf,
-                PrimitiveCount = n.primitiveCount,
-                Primitive = n.firstChildOrPrimitive
-            }).ToList();
-
-            foreach (BVNode newNode in newNodes)
-            {
+                BVNode newNode = new BVNode
+                {
+                    Min = new Vector3(nativeNode.minX, nativeNode.minY, nativeNode.minZ),
+                    Max = new Vector3(nativeNode.maxX, nativeNode.maxY, nativeNode.maxZ),
+                    IsLeaf = nativeNode.isLeaf,
+                    PrimitiveCount = nativeNode.primitiveCount,
+                    Primitive = 0 // Hold on, we're just about to assign this
+                };
                 if (newNode.IsLeaf)
                 {
-                    BVNode matchingLeaf = leaves.Find(x => x.Min == newNode.Min && x.Max == newNode.Max);
-                    newNode.Primitive = matchingLeaf.Primitive;
+                    int matchingNodeIdx = leaves.FindIndex(x => x.Min == newNode.Min && x.Max == newNode.Max);
+                    newNode.Primitive = leaves[matchingNodeIdx].Primitive;
+                    leaves.RemoveAt(matchingNodeIdx); // To ensure two leaves with the same min and max both get processed
                 }
+
+                newNodes.Add(newNode);
             }
+
             for (int i = 0; i < nativeNodes.Length; i++)
             {
                 if (nativeNodes[i].isLeaf) continue;
