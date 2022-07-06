@@ -27,10 +27,10 @@ namespace HKX2Builders
         public static extern bool BuildBVHForMesh([In] Vector3[] vertices, [In] uint[] indices, int icount);
 
         [DllImport("libNavGen")]
-        public static extern ulong GetNodeSize();
+        public static extern uint GetNodeSize();
 
         [DllImport("libNavGen")]
-        public static extern ulong GetBVHSize();
+        public static extern uint GetBVHSize();
 
         [DllImport("libNavGen")]
         public static extern void GetBVHNodes([In] [Out] NativeBVHNode[] buffer);
