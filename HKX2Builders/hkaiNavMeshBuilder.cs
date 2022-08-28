@@ -58,9 +58,9 @@ namespace HKX2Builders
                 var vy = bverts[i * 3 + 1];
                 var vz = bverts[i * 3 + 2];
 
-                var vert = new Vector3(bounds[0].X + vx * c.CellSize,
-                    bounds[0].Y + vy * c.CellHeight,
-                    bounds[0].Z + vz * c.CellSize);
+                var vert = new Vector3(bounds[0].X + (float)vx * c.CellSize,
+                    bounds[0].Y + (float)vy * c.CellHeight,
+                    bounds[0].Z + (float)vz * c.CellSize);
                 navMesh.m_vertices.Add(new Vector4(vert.X, vert.Y, vert.Z, 1.0f));
                 vbverts[i] = vert;
             }
@@ -83,7 +83,7 @@ namespace HKX2Builders
                     var e = new hkaiNavMeshEdge
                     {
                         m_a = bindices[t * 2 + i],
-                        m_b = bindices[t * 2 + (i + 1) % 3],
+                        m_b = bindices[t * 2 + ((i + 1) % 3)],
                         m_flags = EdgeFlagBits.EDGE_ORIGINAL
                     };
                     // Record adjacency
@@ -97,11 +97,11 @@ namespace HKX2Builders
                     {
                         e.m_oppositeFace = bindices[t * 2 + 3 + i];
                         // Find the edge that has this face as an adjacency
-                        for (var j = 0; j < 3; j++)
+                        for (int j = 0; j < 3; j++)
                         {
                             var edge = bindices[t * 2 + 3 + i] * 6 + 3 + j;
                             if (bindices[edge] == t / 3)
-                                e.m_oppositeEdge = (uint) bindices[t * 2 + 3 + i] * 3 + (uint) j;
+                                e.m_oppositeEdge = (uint)bindices[t * 2 + 3 + i] * 3 + (uint)j;
                         }
                     }
 
