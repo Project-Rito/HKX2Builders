@@ -127,12 +127,12 @@ namespace HKX2Builders
             {
                 return new Config
                 {
-                    CellSize = 0.3f,
-                    CellHeight = 0.3f,
+                    CellSize = 0.05f,
+                    CellHeight = 0.05f,
                     WalkableSlopeAngle = 30.0f,
-                    WalkableHeight = 2.0f,
-                    WalkableClimb = 1.0f,
-                    WalkableRadius = 0.5f,
+                    WalkableHeight = 1.0f,
+                    WalkableClimb = 0.5f,
+                    WalkableRadius = 0.001f,
                     MinRegionArea = 3
                 };
             }
