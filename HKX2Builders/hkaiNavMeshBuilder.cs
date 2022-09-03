@@ -7,13 +7,20 @@ namespace HKX2Builders
 {
     public static class hkaiNavMeshBuilder
     {
-        public static hkaiNavMesh Build(Config c, List<Vector3> verts, List<int> indices)
+        public static hkaiNavMesh Build(Config config, List<Vector3> verts, List<int> indices)
         {
+            return (hkaiNavMesh)BuildRoot(config, verts, indices).m_namedVariants[0].m_variant;
+        }
+
+        public static hkRootLevelContainer BuildRoot(Config config, List<Vector3> verts, List<int> indices)
+        {
+            var root = new hkRootLevelContainer();
+
             NavMeshNative.SetNavmeshBuildParams(
-                c.CellSize, c.CellHeight,
-                c.WalkableSlopeAngle, c.WalkableHeight,
-                c.WalkableClimb, c.WalkableRadius,
-                c.MinRegionArea);
+                config.CellSize, config.CellHeight,
+                config.WalkableSlopeAngle, config.WalkableHeight,
+                config.WalkableClimb, config.WalkableRadius,
+                config.MinRegionArea);
 
             if (!NavMeshNative.BuildNavmeshForMesh(
                 verts.ToArray(), verts.Count, indices.ToArray(), indices.Count))
@@ -58,9 +65,9 @@ namespace HKX2Builders
                 var vy = bverts[i * 3 + 1];
                 var vz = bverts[i * 3 + 2];
 
-                var vert = new Vector3(bounds[0].X + (float)vx * c.CellSize,
-                    bounds[0].Y + (float)vy * c.CellHeight,
-                    bounds[0].Z + (float)vz * c.CellSize);
+                var vert = new Vector3(bounds[0].X + (float)vx * config.CellSize,
+                    bounds[0].Y + (float)vy * config.CellHeight,
+                    bounds[0].Z + (float)vz * config.CellSize);
                 navMesh.m_vertices.Add(new Vector4(vert.X, vert.Y, vert.Z, 1.0f));
                 vbverts[i] = vert;
             }
@@ -110,7 +117,87 @@ namespace HKX2Builders
                 }
             }
 
-            return navMesh;
+            root.m_namedVariants = new List<hkRootLevelContainerNamedVariant>();
+            var variant = new hkRootLevelContainerNamedVariant();
+            variant.m_className = "hkaiNavMesh";
+            variant.m_name = "hkaiNavMesh";
+            variant.m_variant = navMesh;
+            root.m_namedVariants.Add(variant);
+
+            // Next step: build a bvh
+            var shortIndices = new uint[bindices.Length / 2];
+            for (int i = 0; i < bindices.Length / 2; i += 3)
+            {
+                shortIndices[i] = bindices[i * 2];
+                shortIndices[i + 1] = bindices[i * 2 + 1];
+                shortIndices[i + 2] = bindices[i * 2 + 2];
+            }
+            bool didbuild = BVHNative.BuildBVHForMesh(vbverts, shortIndices, shortIndices.Length);
+            if (!didbuild)
+            {
+                return null;
+            }
+
+            var nodecount = BVHNative.GetBVHSize();
+            var nsize = BVHNative.GetNodeSize();
+            var nodes = new NativeBVHNode[nodecount];
+            BVHNative.GetBVHNodes(nodes);
+
+            // Rebuild in friendlier tree form
+            List<BVNode> bnodes = new List<BVNode>((int)nodecount);
+            foreach (var n in nodes)
+            {
+                var bnode = new BVNode();
+                bnode.Min = new Vector3(n.minX, n.minY, n.minZ);
+                bnode.Max = new Vector3(n.maxX, n.maxY, n.maxZ);
+                bnode.IsLeaf = n.isLeaf;
+                bnode.PrimitiveCount = n.primitiveCount;
+                bnode.Primitive = n.firstChildOrPrimitive;
+                bnodes.Add(bnode);
+            }
+            for (int i = 0; i < nodes.Length; i++)
+            {
+                if (!nodes[i].isLeaf)
+                {
+                    bnodes[i].Left = bnodes[(int)nodes[i].firstChildOrPrimitive];
+                    bnodes[i].Right = bnodes[(int)nodes[i].firstChildOrPrimitive + 1];
+                }
+            }
+
+            var bvhvariant = new hkRootLevelContainerNamedVariant();
+            bvhvariant.m_className = "hkcdStaticAabbTree";
+            bvhvariant.m_name = "hkcdStaticAabbTree";
+            var tree = new hkcdStaticAabbTree();
+            bvhvariant.m_variant = tree;
+            root.m_namedVariants.Add(bvhvariant);
+
+            tree.m_treePtr = new hkcdStaticTreeDefaultTreeStorage6();
+            tree.m_treePtr.m_nodes = bnodes[0].BuildAxis6Tree();
+            var min = bnodes[0].Min;
+            var max = bnodes[0].Max;
+            tree.m_treePtr.m_domain = new hkAabb();
+            tree.m_treePtr.m_domain.m_min = new Vector4(min.X, min.Y, min.Z, 1.0f);
+            tree.m_treePtr.m_domain.m_max = new Vector4(max.X, max.Y, max.Z, 1.0f);
+
+            // Build a dummy directed graph
+            var gvariant = new hkRootLevelContainerNamedVariant();
+            gvariant.m_className = "hkaiDirectedGraphExplicitCost";
+            gvariant.m_name = "hkaiDirectedGraphExplicitCost";
+            var graph = new hkaiDirectedGraphExplicitCost();
+            gvariant.m_variant = graph;
+            root.m_namedVariants.Add(gvariant);
+
+            graph.m_nodes = new List<hkaiDirectedGraphExplicitCostNode>();
+            var node = new hkaiDirectedGraphExplicitCostNode();
+            node.m_numEdges = 0;
+            node.m_startEdgeIndex = 0;
+            graph.m_nodes.Add(node);
+
+            graph.m_positions = new List<Vector4>();
+            var c = (max - min) / 2;
+            graph.m_positions.Add(new Vector4(c.X, c.Y, c.Z, 1.0f));
+
+            return root;
         }
 
         public struct Config
