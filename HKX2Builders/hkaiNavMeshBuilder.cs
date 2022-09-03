@@ -118,11 +118,10 @@ namespace HKX2Builders
             }
 
             root.m_namedVariants = new List<hkRootLevelContainerNamedVariant>();
-            var variant = new hkRootLevelContainerNamedVariant();
-            variant.m_className = "hkaiNavMesh";
-            variant.m_name = "hkaiNavMesh";
-            variant.m_variant = navMesh;
-            root.m_namedVariants.Add(variant);
+            var nmvariant = new hkRootLevelContainerNamedVariant();
+            nmvariant.m_className = "hkaiNavMesh";
+            nmvariant.m_name = "hkaiNavMesh";
+            nmvariant.m_variant = navMesh;
 
             // Next step: build a bvh
             var shortIndices = new uint[bindices.Length / 2];
@@ -164,12 +163,17 @@ namespace HKX2Builders
                 }
             }
 
-            var bvhvariant = new hkRootLevelContainerNamedVariant();
-            bvhvariant.m_className = "hkcdStaticAabbTree";
-            bvhvariant.m_name = "hkcdStaticAabbTree";
+            
+            var querymediatorvariant = new hkRootLevelContainerNamedVariant();
+            querymediatorvariant.m_className = "hkaiStaticTreeNavMeshQueryMediator";
+            querymediatorvariant.m_name = "";
+            var querymediator = new hkaiStaticTreeNavMeshQueryMediator();
+            querymediatorvariant.m_variant = querymediator;
+
             var tree = new hkcdStaticAabbTree();
-            bvhvariant.m_variant = tree;
-            root.m_namedVariants.Add(bvhvariant);
+
+            querymediator.m_tree = tree;
+            querymediator.m_navMesh = navMesh;
 
             tree.m_treePtr = new hkcdStaticTreeDefaultTreeStorage6();
             tree.m_treePtr.m_nodes = bnodes[0].BuildAxis6Tree();
@@ -185,7 +189,6 @@ namespace HKX2Builders
             gvariant.m_name = "hkaiDirectedGraphExplicitCost";
             var graph = new hkaiDirectedGraphExplicitCost();
             gvariant.m_variant = graph;
-            root.m_namedVariants.Add(gvariant);
 
             graph.m_nodes = new List<hkaiDirectedGraphExplicitCostNode>();
             var node = new hkaiDirectedGraphExplicitCostNode();
@@ -196,6 +199,18 @@ namespace HKX2Builders
             graph.m_positions = new List<Vector4>();
             var c = (max - min) / 2;
             graph.m_positions.Add(new Vector4(c.X, c.Y, c.Z, 1.0f));
+
+            // Unused but can't be null...
+            graph.m_edges = new List<hkaiDirectedGraphExplicitCostEdge>();
+            graph.m_edgeData = new List<uint>();
+            graph.m_edgeDataStriding = 0;
+            graph.m_nodeData = new List<uint>();
+            graph.m_nodeDataStriding = 0;
+            graph.m_streamingSets = new List<hkaiStreamingSet>();
+
+            root.m_namedVariants.Add(nmvariant);
+            root.m_namedVariants.Add(gvariant);
+            root.m_namedVariants.Add(querymediatorvariant);
 
             return root;
         }
