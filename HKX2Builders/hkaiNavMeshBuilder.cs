@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Numerics;
 using HKX2;
@@ -187,32 +188,196 @@ namespace HKX2Builders
             var gvariant = new hkRootLevelContainerNamedVariant();
             gvariant.m_className = "hkaiDirectedGraphExplicitCost";
             gvariant.m_name = "hkaiDirectedGraphExplicitCost";
-            var graph = new hkaiDirectedGraphExplicitCost();
+            var graph = BuildGraph(navMesh, config);
             gvariant.m_variant = graph;
-
-            graph.m_nodes = new List<hkaiDirectedGraphExplicitCostNode>();
-            var node = new hkaiDirectedGraphExplicitCostNode();
-            node.m_numEdges = 0;
-            node.m_startEdgeIndex = 0;
-            graph.m_nodes.Add(node);
-
-            graph.m_positions = new List<Vector4>();
-            var c = (max - min) / 2;
-            graph.m_positions.Add(new Vector4(c.X, c.Y, c.Z, 1.0f));
-
-            // Unused but can't be null...
-            graph.m_edges = new List<hkaiDirectedGraphExplicitCostEdge>();
-            graph.m_edgeData = new List<uint>();
-            graph.m_edgeDataStriding = 0;
-            graph.m_nodeData = new List<uint>();
-            graph.m_nodeDataStriding = 0;
-            graph.m_streamingSets = new List<hkaiStreamingSet>();
 
             root.m_namedVariants.Add(nmvariant);
             root.m_namedVariants.Add(gvariant);
             root.m_namedVariants.Add(querymediatorvariant);
 
             return root;
+        }
+
+        private static hkaiDirectedGraphExplicitCost BuildGraph(hkaiNavMesh navMesh, Config config)
+        {
+            var graph = new hkaiDirectedGraphExplicitCost()
+            {
+                m_positions = new List<Vector4>(navMesh.m_faces.Count),
+                m_nodes = new List<hkaiDirectedGraphExplicitCostNode>(navMesh.m_faces.Count),
+                m_edges = new List<hkaiDirectedGraphExplicitCostEdge>(navMesh.m_edges.Count),
+                m_edgeData = new List<uint>(),
+                m_edgeDataStriding = 0,
+                m_nodeData = new List<uint>(),
+                m_nodeDataStriding = 0,
+                m_streamingSets = new List<hkaiStreamingSet>()
+            };
+
+            // Init positions with center of all ngons
+            foreach (var face in navMesh.m_faces)
+            {
+                Vector4 center = Vector4.Zero;
+                for (int i = face.m_startEdgeIndex; i < face.m_numEdges + face.m_startEdgeIndex; i++)
+                {
+                    var edge = navMesh.m_edges[i];
+                    center += navMesh.m_vertices[edge.m_a];
+                }
+                center /= face.m_numEdges;
+
+                graph.m_positions.Add(center);
+
+                // Set up edges to all adjacent (non-diagonal) faces
+                int numEdges = 0;
+                int startEdgeIndex = graph.m_edges.Count;
+                for (int i = face.m_startEdgeIndex; i < face.m_numEdges + face.m_startEdgeIndex; i++)
+                {
+                    var edge = navMesh.m_edges[i];
+                    if (edge.m_oppositeFace != 0xFFFFFFFF)
+                    {
+                        graph.m_edges.Add(new hkaiDirectedGraphExplicitCostEdge()
+                        {
+                            m_cost = -1, // Calc later
+                            m_flags = EdgeBits.EDGE_IS_USER,
+                            m_target = edge.m_oppositeFace
+                        });
+                        numEdges++;
+                    }
+                }
+                // TODO: Add non-adjacent faces that are within config.WalkableHeight radius
+
+                // Add the node
+                graph.m_nodes.Add(new hkaiDirectedGraphExplicitCostNode()
+                {
+                    m_numEdges = numEdges,
+                    m_startEdgeIndex = startEdgeIndex
+                });
+            }
+
+            // Calculate costs for all edges
+            CalcEdgeCosts();
+
+            // Remove unnessisary nodes
+            SortedSet<uint> nodesToRemove = new SortedSet<uint>();
+            for (int i = 0; i < graph.m_nodes.Count; i++)
+            {
+                var node = graph.m_nodes[i];
+
+                short edgeAvgCost = 0;
+                short edgeCount = 0;
+                short adjacentEdgeAvgCost = 0;
+                short adjacentEdgeCount = 0;
+                for (int e = node.m_startEdgeIndex; e < node.m_startEdgeIndex + node.m_numEdges; e++)
+                {
+                    if (nodesToRemove.Contains(graph.m_edges[e].m_target))
+                        continue;
+
+                    edgeAvgCost += graph.m_edges[e].m_cost;
+                    edgeCount++;
+
+                    var oppositeNode = graph.m_nodes[(int)graph.m_edges[e].m_target];
+                    for (int oe = oppositeNode.m_startEdgeIndex; oe < oppositeNode.m_startEdgeIndex + oppositeNode.m_numEdges; oe++)
+                    {
+                        if (graph.m_edges[oe].m_target == i)
+                            continue;
+
+                        adjacentEdgeAvgCost += graph.m_edges[oe].m_cost;
+                        adjacentEdgeCount++;
+                    }
+                }
+                if (adjacentEdgeCount == 0)
+                {
+                    nodesToRemove.Add((uint)i);
+                    continue;
+                }
+
+                edgeAvgCost /= edgeCount;
+                adjacentEdgeAvgCost /= adjacentEdgeCount;
+
+                if (Math.Abs((float)edgeAvgCost - (float)adjacentEdgeAvgCost) < config.MinGraphGrouping)
+                    nodesToRemove.Add((uint)i);
+            }
+
+            uint[] removedNodeIndexMapping = Enumerable.Repeat(0xFFFFFFFF, graph.m_nodes.Count).ToArray();
+            List<Vector4> simplifiedPositions = new List<Vector4>(graph.m_positions.Count - nodesToRemove.Count);
+            List<hkaiDirectedGraphExplicitCostNode> simplifiedNodes = new List<hkaiDirectedGraphExplicitCostNode>(graph.m_nodes.Count - nodesToRemove.Count);
+            List<hkaiDirectedGraphExplicitCostEdge> simplifiedEdges = new List<hkaiDirectedGraphExplicitCostEdge>(graph.m_edges.Count);
+            for (int i = 0; i < graph.m_nodes.Count; i++)
+            {
+                if (nodesToRemove.Contains((uint)i))
+                    continue;
+
+                var node = graph.m_nodes[i];
+
+                removedNodeIndexMapping[i] = (uint)simplifiedNodes.Count;
+
+                List<uint> newOppositeNodes = new List<uint>();
+                List<uint> nodesToDissolve = new List<uint>() { (uint)i };
+                for (int ndi = 0; ndi < nodesToDissolve.Count; ndi++)
+                {
+                    uint nd = nodesToDissolve[ndi];
+
+                    var nodeToDissolve = graph.m_nodes[(int)nd];
+
+                    // Find anything connected that needs to be dissolved...
+                    for (int ed = nodeToDissolve.m_startEdgeIndex; ed < nodeToDissolve.m_startEdgeIndex + nodeToDissolve.m_numEdges; ed++)
+                    {
+                        var nodeToDissolveEdge = graph.m_edges[ed];
+
+                        if (nodesToDissolve.Contains(nodeToDissolveEdge.m_target)) // Slow, should look into using BinarySearch
+                            continue;
+
+                        if (nodesToRemove.Contains(nodeToDissolveEdge.m_target))
+                            nodesToDissolve.Add(nodeToDissolveEdge.m_target);
+                        else
+                            newOppositeNodes.Add(nodeToDissolveEdge.m_target);
+                    }
+                }
+
+                node.m_startEdgeIndex = simplifiedEdges.Count;
+                node.m_numEdges = newOppositeNodes.Count;
+                foreach (uint newOppositeNode in newOppositeNodes)
+                {
+                    simplifiedEdges.Add(new hkaiDirectedGraphExplicitCostEdge()
+                    {
+                        m_flags = EdgeBits.EDGE_IS_USER,
+                        m_cost = -1, // calc later
+                        m_target = newOppositeNode,
+                    });
+                }
+
+                simplifiedPositions.Add(graph.m_positions[i]);
+                simplifiedNodes.Add(node);
+            }
+
+            // Apply mapping
+            foreach (var simplifiedEdge in simplifiedEdges)
+                simplifiedEdge.m_target = removedNodeIndexMapping[simplifiedEdge.m_target];
+
+            graph.m_positions = simplifiedPositions;
+            graph.m_nodes = simplifiedNodes;
+            graph.m_edges = simplifiedEdges;
+
+            // Calculate costs for all edges... again, now that we've cleaned up stuff again
+            CalcEdgeCosts();
+
+            return graph;
+
+            void CalcEdgeCosts()
+            {
+                for (int i = 0; i < graph.m_nodes.Count; i++)
+                {
+                    var node = graph.m_nodes[i];
+                    var position = graph.m_positions[i];
+
+                    for (int e = node.m_startEdgeIndex; e < node.m_startEdgeIndex + node.m_numEdges; e++)
+                    {
+                        Vector4 oppositePosition = graph.m_positions[(int)graph.m_edges[e].m_target];
+
+                        Vector4 vec = oppositePosition - position;
+
+                        graph.m_edges[e].m_cost = (short)(vec.Length() + (vec.Y * config.CostYScale));
+                    }
+                }
+            }
         }
 
         public struct Config
@@ -225,6 +390,9 @@ namespace HKX2Builders
             public float WalkableRadius;
             public int MinRegionArea;
 
+            public float CostYScale;
+            public float MinGraphGrouping;
+
             public static Config Default()
             {
                 return new Config
@@ -235,7 +403,10 @@ namespace HKX2Builders
                     WalkableHeight = 1.0f,
                     WalkableClimb = 0.5f,
                     WalkableRadius = 0.001f,
-                    MinRegionArea = 3
+                    MinRegionArea = 3,
+
+                    CostYScale = 2f,
+                    MinGraphGrouping = 8f,
                 };
             }
         }
