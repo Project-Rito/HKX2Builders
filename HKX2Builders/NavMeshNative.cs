@@ -27,6 +27,12 @@ namespace HKX2Builders
         public static extern void GetMeshTris([In] [Out] ushort[] buffer);
 
         [DllImport("libNavGen")]
+        public static extern void GetMeshAreas([In][Out] byte[] buffer);
+
+        [DllImport("libNavGen")]
+        public static extern void GetMeshRegions([In][Out] ushort[] buffer);
+
+        [DllImport("libNavGen")]
         public static extern void GetBoundingBox([In] [Out] Vector3[] buffer);
     }
 }
