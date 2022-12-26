@@ -222,6 +222,515 @@ namespace HKX2Builders
 
         public static hkRootLevelContainer UpdateStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
         {
+            root = BuildNavmeshStreamingSet(root, rootOrigin, streamable, streamableOrigin, index, config);
+
+            root = BuildGraphStreamingSet(root, rootOrigin, streamable, streamableOrigin, index, config);
+
+            return root;
+        }
+
+        private static hkRootLevelContainer BuildNavmeshStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        {
+            // Useful vector stuff
+            Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
+            Vector4 streamableOriginVec4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1f);
+
+            hkaiNavMesh rootNavmesh = (hkaiNavMesh)root.m_namedVariants[0].m_variant;
+            hkaiNavMesh streamableNavmesh = (hkaiNavMesh)streamable.m_namedVariants[0].m_variant;
+
+            hkaiStreamingSet nmStreamingSet = new hkaiStreamingSet()
+            {
+                m_thisUid = Convert.ToUInt32(root.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_oppositeUid = Convert.ToUInt32(streamable.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+            };
+
+            bool xMask = true;
+            bool yMask = true;
+            bool zMask = true;
+            switch (index)
+            {
+                case 0:
+                    break;
+                case 1:
+                    xMask = false;
+                    break;
+                case 2:
+                    break;
+                case 3:
+                    zMask = false;
+                    break;
+                case 4:
+                    zMask = false;
+                    break;
+                case 5:
+                    break;
+                case 6:
+                    xMask = false;
+                    break;
+                case 7:
+                    break;
+            }
+
+            HashSet<FaceEdgePair> streamableBorderFaceEdgePairs = new HashSet<FaceEdgePair>();
+            for (int f = 0; f < streamableNavmesh.m_faces.Count; f++)
+            {
+                hkaiNavMeshFace face = streamableNavmesh.m_faces[f];
+
+                for (int e = face.m_startEdgeIndex; e < face.m_startEdgeIndex + face.m_numEdges; e++)
+                {
+                    hkaiNavMeshEdge edge = streamableNavmesh.m_edges[e];
+                    Vector4 edgeA = streamableNavmesh.m_vertices[edge.m_a];
+                    Vector4 edgeB = streamableNavmesh.m_vertices[edge.m_b];
+                    Vector4 edgeMid = (edgeA + edgeB) / 2f;
+                    Vector4 edgeARootSpace = edgeA + streamableOriginVec4 - rootOriginVec4;
+                    Vector4 edgeBRootSpace = edgeB + streamableOriginVec4 - rootOriginVec4;
+                    Vector4 edgeMidRootSpace = edgeMid + streamableOriginVec4 - rootOriginVec4;
+
+                    if (Math.Abs((edgeMidRootSpace - Vector4.Zero).Length()) > config.StreamingSetSearchRadius)
+                        continue;
+
+                    if (edge.m_oppositeEdge == 0xFFFFFFFF)
+                    {
+                        streamableBorderFaceEdgePairs.Add(new FaceEdgePair { FaceIdx = f, EdgeIdx = e });
+                    }
+                }
+            }
+
+            HashSet<int> rootBorderFaceIndices = new HashSet<int>();
+            for (int f = 0; f < rootNavmesh.m_faces.Count; f++)
+            {
+                hkaiNavMeshFace face = rootNavmesh.m_faces[f];
+
+                for (int e = face.m_startEdgeIndex; e < face.m_startEdgeIndex + face.m_numEdges; e++)
+                {
+
+                    hkaiNavMeshEdge edge = rootNavmesh.m_edges[e];
+
+                    if (edge.m_oppositeEdge == 0xFFFFFFFF)
+                    {
+                        rootBorderFaceIndices.Add(f);
+                    }
+                }
+            }
+
+            if (streamableBorderFaceEdgePairs.Count == 0 || rootBorderFaceIndices.Count == 0)
+                return root;
+
+            // Remove the edge vertices from root
+            // Make sure that the only vertices removed are the ones that matter
+            // Or maybe when merging into polys we can do this, looking for 0xFFFFFFFF or whatever.
+
+            // As adding points create streaming sets. look for if point already there, if so use it in a streaming set, otherwise add one.
+
+            Dictionary<Vector4, int> addedVerticesToIndices = new Dictionary<Vector4, int>();
+            foreach (FaceEdgePair streamablePair in streamableBorderFaceEdgePairs)
+            {
+                Vector4 streamableEdgeA = streamableNavmesh.m_vertices[streamableNavmesh.m_edges[streamablePair.EdgeIdx].m_a];
+                Vector4 streamableEdgeB = streamableNavmesh.m_vertices[streamableNavmesh.m_edges[streamablePair.EdgeIdx].m_b];
+                Vector4 streamableEdgeMid = (streamableEdgeA + streamableEdgeB) / 2f;
+                Vector4 streamableEdgeARootSpace = streamableEdgeA + streamableOriginVec4 - rootOriginVec4;
+                Vector4 streamableEdgeBRootSpace = streamableEdgeB + streamableOriginVec4 - rootOriginVec4;
+                Vector4 streamableEdgeMidRootSpace = streamableEdgeMid + streamableOriginVec4 - rootOriginVec4;
+
+                int aIdx;
+                int bIdx;
+                if (addedVerticesToIndices.ContainsKey(streamableEdgeARootSpace))
+                    aIdx = addedVerticesToIndices[streamableEdgeARootSpace];
+                else
+                {
+                    aIdx = rootNavmesh.m_vertices.Count;
+                    rootNavmesh.m_vertices.Add(streamableEdgeARootSpace);
+                    addedVerticesToIndices.Add(streamableEdgeARootSpace, aIdx);
+                }
+                if (addedVerticesToIndices.ContainsKey(streamableEdgeBRootSpace))
+                    bIdx = addedVerticesToIndices[streamableEdgeBRootSpace];
+                else
+                {
+                    bIdx = rootNavmesh.m_vertices.Count;
+                    rootNavmesh.m_vertices.Add(streamableEdgeBRootSpace);
+                    addedVerticesToIndices.Add(streamableEdgeBRootSpace, bIdx);
+                }
+
+                //float aRootFaceMinDist = float.MaxValue;
+                //float bRootFaceMinDist = float.MaxValue;
+                //int aRootFaceIdx = -1;
+                //int bRootFaceIdx = -1;
+                float rootFaceMinDist = float.MaxValue;
+                int rootFaceMinDistIdx = -1;
+                foreach (int rootFaceIdx in rootBorderFaceIndices)
+                {
+                    hkaiNavMeshFace rootNavmeshEdgeFace = rootNavmesh.m_faces[rootFaceIdx];
+                    if (rootNavmeshEdgeFace.m_numEdges > 10000)
+                        Console.WriteLine();
+
+                    Vector4 rootFaceMid = new Vector4();
+                    for (int rootNavmeshEdgeIdx = rootNavmeshEdgeFace.m_startEdgeIndex; rootNavmeshEdgeIdx < rootNavmeshEdgeFace.m_startEdgeIndex + rootNavmeshEdgeFace.m_numEdges; rootNavmeshEdgeIdx++)
+                    {
+                        rootFaceMid += rootNavmesh.m_vertices[rootNavmesh.m_edges[rootNavmeshEdgeIdx].m_b];
+                    }
+                    rootFaceMid /= rootNavmeshEdgeFace.m_numEdges;
+
+                    Vector4 rootFaceMidMasked = new Vector4();
+                    rootFaceMidMasked.X = xMask ? rootFaceMid.X : 0f;
+                    rootFaceMidMasked.Y = yMask ? rootFaceMid.Y : 0f;
+                    rootFaceMidMasked.Z = zMask ? rootFaceMid.Z : 0f;
+
+                    float dist = (streamableEdgeMidRootSpace - rootFaceMidMasked).Length();
+
+                    if (dist < rootFaceMinDist)
+                    {
+                        rootFaceMinDist = dist;
+                        rootFaceMinDistIdx = rootFaceIdx;
+                    }
+
+                    /*
+                    float aDist = (streamableEdgeARootSpace - rootFaceMid).Length();
+                    float bDist = (streamableEdgeBRootSpace - rootFaceMid).Length();
+
+                    if (aDist < aRootFaceMinDist)
+                    {
+                        aRootFaceMinDist = aDist;
+                        aRootFaceIdx = rootFaceIdx;
+                    }
+                    if (bDist < bRootFaceMinDist)
+                    {
+                        bRootFaceMinDist = bDist;
+                        bRootFaceIdx = rootFaceIdx;
+                    }
+                    */
+                }
+
+                Console.WriteLine(rootFaceMinDistIdx);
+
+                if (rootFaceMinDistIdx == -1)
+                    return root;
+
+                hkaiNavMeshFace rootFace = rootNavmesh.m_faces[rootFaceMinDistIdx];
+
+                float rootFaceEdgeMinDist = float.MaxValue;
+                int rootFaceEdgeMinDistIdx = -1;
+                for (int rootNavmeshEdgeIdx = rootFace.m_startEdgeIndex; rootNavmeshEdgeIdx < rootFace.m_startEdgeIndex + rootFace.m_numEdges; rootNavmeshEdgeIdx++)
+                {
+                    hkaiNavMeshEdge rootNavmeshEdge = rootNavmesh.m_edges[rootNavmeshEdgeIdx];
+
+                    // Find a root edge that has a point on it closest to the midpoint of the streamable edge
+
+                    Vector4 rootNavmeshEdgeA = rootNavmesh.m_vertices[rootNavmeshEdge.m_a];
+                    Vector4 rootNavmeshEdgeB = rootNavmesh.m_vertices[rootNavmeshEdge.m_b];
+                    Vector4 rootNavmeshEdgeMid = (rootNavmeshEdgeA + rootNavmeshEdgeB) / 2f;
+
+                    float dist = (rootNavmeshEdgeMid - streamableEdgeMidRootSpace).Length();
+
+                    if (dist < rootFaceEdgeMinDist)
+                    {
+                        rootFaceEdgeMinDistIdx = rootNavmeshEdgeIdx;
+                        rootFaceEdgeMinDist = dist;
+                    }
+                }
+
+                if (rootFaceEdgeMinDistIdx == -1)
+                    return root;
+
+                hkaiNavMeshEdge replaceEdge = rootNavmesh.m_edges[rootFaceEdgeMinDistIdx];
+                rootNavmesh.m_edges.RemoveAt(rootFaceEdgeMinDistIdx);
+                rootNavmesh.m_edges.InsertRange(rootFaceEdgeMinDistIdx, new List<hkaiNavMeshEdge>() 
+                {
+                    new hkaiNavMeshEdge()
+                    {
+                        m_a = replaceEdge.m_a,
+                        m_b = aIdx,
+                        m_oppositeEdge = 0xFFFFFFFF,
+                        m_oppositeFace = 0xFFFFFFFF,
+                        m_flags = 0
+                    },
+                    new hkaiNavMeshEdge()
+                    {
+                        m_a = aIdx,
+                        m_b = bIdx,
+                        m_oppositeEdge = 0xFFFFFFFF,
+                        m_oppositeFace = 0xFFFFFFFF,
+                        m_flags = 0
+                    },
+                    new hkaiNavMeshEdge()
+                    {
+                        m_a = bIdx,
+                        m_b = replaceEdge.m_b,
+                        m_oppositeEdge = 0xFFFFFFFF,
+                        m_oppositeFace = 0xFFFFFFFF,
+                        m_flags = 0
+                    },
+                });
+                rootNavmesh.m_faces[rootFaceMinDistIdx].m_numEdges += 2;
+
+                // We need to change the starts of everything after.
+                for (int rootFaceIdx = rootFaceMinDistIdx + 1; rootFaceIdx < rootNavmesh.m_faces.Count; rootFaceIdx++)
+                {
+                    rootNavmesh.m_faces[rootFaceIdx].m_startEdgeIndex += 2;
+                }
+            }
+
+            
+
+
+
+
+            rootNavmesh.m_streamingSets[index] = nmStreamingSet;
+            root.m_namedVariants[0].m_variant = rootNavmesh;
+
+            return root;
+        }
+
+        private static hkRootLevelContainer BuildNavmeshStreamingSetOld2(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        {
+            // Useful vector stuff
+            Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
+            Vector4 streamableOriginVec4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1f);
+
+            hkaiNavMesh rootNavmesh = (hkaiNavMesh)root.m_namedVariants[0].m_variant;
+            hkaiNavMesh streamableNavmesh = (hkaiNavMesh)streamable.m_namedVariants[0].m_variant;
+
+            hkaiStreamingSet nmStreamingSet = new hkaiStreamingSet()
+            {
+                m_thisUid = Convert.ToUInt32(root.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_oppositeUid = Convert.ToUInt32(streamable.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+            };
+
+            bool xMask = true;
+            bool yMask = true;
+            bool zMask = true;
+            switch (index)
+            {
+                case 0:
+                    break;
+                case 1:
+                    xMask = false;
+                    break;
+                case 2:
+                    break;
+                case 3:
+                    zMask = false;
+                    break;
+                case 4:
+                    zMask = false;
+                    break;
+                case 5:
+                    break;
+                case 6:
+                    xMask = false;
+                    break;
+                case 7:
+                    break;
+            }
+
+            HashSet<FaceEdgePair> streamableBorderFaceEdgePairs = new HashSet<FaceEdgePair>();
+            for (int f = 0; f < streamableNavmesh.m_faces.Count; f++)
+            {
+                hkaiNavMeshFace face = streamableNavmesh.m_faces[f];
+
+                for (int e = face.m_startEdgeIndex; e < face.m_startEdgeIndex + face.m_numEdges; e++)
+                {
+
+                    hkaiNavMeshEdge edge = streamableNavmesh.m_edges[e];
+
+                    if (edge.m_oppositeEdge == 0xFFFFFFFF)
+                    {
+                        streamableBorderFaceEdgePairs.Add(new FaceEdgePair { FaceIdx = f, EdgeIdx = e });
+                    }
+                }
+            }
+
+            for (int f = 0; f < rootNavmesh.m_faces.Count; f++)
+            {
+                hkaiNavMeshFace face = rootNavmesh.m_faces[f];
+
+                for (int e = face.m_startEdgeIndex; e < face.m_startEdgeIndex + face.m_numEdges; e++)
+                {
+                    hkaiNavMeshEdge edge = rootNavmesh.m_edges[e];
+                    Vector4 edgePosA = rootNavmesh.m_vertices[edge.m_a];
+                    Vector4 edgePosB = rootNavmesh.m_vertices[edge.m_b];
+                    Vector4 edgeCenter = (edgePosA + edgePosB) / 2f;
+                    Vector4 edgeCenterMasked = edgeCenter;
+                    if (!xMask)
+                        edgeCenterMasked.X = 0f;
+                    if (!yMask)
+                        edgeCenterMasked.Y = 0f;
+                    if (!zMask)
+                        edgeCenterMasked.Z = 0f;
+
+                    if (edge.m_oppositeFace == 0xFFFFFFFF)
+                    {
+                        float minDist = float.MaxValue;
+                        float minDistMasked = float.MaxValue;
+                        FaceEdgePair streamableBorderFaceEdgePair = null;
+                        Vector4 streamableBorderEdgePairPosA = new Vector4();
+                        Vector4 streamableBorderEdgePairPosB = new Vector4();
+                        Vector4 streamableBorderEdgePairCenter = new Vector4();
+                        foreach (FaceEdgePair faceEdgePair in streamableBorderFaceEdgePairs)
+                        {
+                            hkaiNavMeshEdge streamableBorderEdge = streamableNavmesh.m_edges[faceEdgePair.EdgeIdx];
+
+                            Vector4 streamableBorderEdgePosA = streamableNavmesh.m_vertices[streamableBorderEdge.m_a];
+                            Vector4 streamableBorderEdgePosB = streamableNavmesh.m_vertices[streamableBorderEdge.m_b];
+                            Vector4 streamableBorderEdgeCenter = (streamableBorderEdgePosA + streamableBorderEdgePosB) / 2f;
+
+                            float dist = Math.Abs((edgeCenter - (streamableBorderEdgeCenter + streamableOriginVec4 - rootOriginVec4)).Length());
+                            Vector4 streamableBorderEdgeCenterMasked = streamableBorderEdgeCenter;
+                            if (!xMask)
+                                streamableBorderEdgeCenterMasked.X = 0f;
+                            if (!yMask)
+                                streamableBorderEdgeCenterMasked.Y = 0f;
+                            if (!zMask)
+                                streamableBorderEdgeCenterMasked.Z = 0f;
+                            float distMasked = Math.Abs((edgeCenterMasked - (streamableBorderEdgeCenterMasked + streamableOriginVec4 - rootOriginVec4)).Length());
+
+                            if (dist < minDist)
+                            {
+                                streamableBorderFaceEdgePair = faceEdgePair;
+                                streamableBorderEdgePairPosA = streamableBorderEdgePosA;
+                                streamableBorderEdgePairPosB = streamableBorderEdgePosB;
+                                streamableBorderEdgePairCenter = streamableBorderEdgeCenter;
+                                minDist = dist;
+                                minDistMasked = distMasked;
+                            }
+                        }
+                        if (streamableBorderFaceEdgePair == null)
+                            continue;
+                        if (minDistMasked > config.StreamingSetSearchRadius)
+                            continue;
+                        nmStreamingSet.m_meshConnections.Add(new hkaiStreamingSetNavMeshConnection()
+                        {
+                            m_edgeIndex = e,
+                            m_faceIndex = f,
+                            m_oppositeFaceIndex = streamableBorderFaceEdgePair.FaceIdx,
+                            m_oppositeEdgeIndex = streamableBorderFaceEdgePair.EdgeIdx
+                        });
+
+                        edgePosA = streamableBorderEdgePairPosA + streamableOriginVec4 - rootOriginVec4;
+                        edgePosB = streamableBorderEdgePairPosB + streamableOriginVec4 - rootOriginVec4;
+                        rootNavmesh.m_vertices[edge.m_a] = edgePosA;
+                        rootNavmesh.m_vertices[edge.m_b] = edgePosB;
+
+                        // Sometimes it'll need to split into two edges...
+                    }
+                }
+            }
+
+            rootNavmesh.m_streamingSets[index] = nmStreamingSet;
+            root.m_namedVariants[0].m_variant = rootNavmesh;
+
+            return root;
+        }
+
+        private static hkRootLevelContainer BuildGraphStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        {
+            // Useful vector stuff
+            Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
+            Vector4 streamableOriginVec4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1f);
+
+            hkaiDirectedGraphExplicitCost rootGraph = (hkaiDirectedGraphExplicitCost)root.m_namedVariants[1].m_variant;
+            hkaiDirectedGraphExplicitCost streamableGraph = (hkaiDirectedGraphExplicitCost)streamable.m_namedVariants[1].m_variant;
+
+            hkaiStreamingSet graphStreamingSet = new hkaiStreamingSet()
+            {
+                m_thisUid = Convert.ToUInt32(root.m_namedVariants[1].m_name.Split("/")[1].Split(",")[0], 16),
+                m_oppositeUid = Convert.ToUInt32(streamable.m_namedVariants[1].m_name.Split("/")[1].Split(",")[0], 16),
+                m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+            };
+
+            bool xMask = true;
+            bool yMask = true;
+            bool zMask = true;
+            switch (index)
+            {
+                case 0:
+                    break;
+                case 1:
+                    xMask = false;
+                    break;
+                case 2:
+                    break;
+                case 3:
+                    zMask = false;
+                    break;
+                case 4:
+                    zMask = false;
+                    break;
+                case 5:
+                    break;
+                case 6:
+                    xMask = false;
+                    break;
+                case 7:
+                    break;
+            }
+
+            for (int n = 0; n < rootGraph.m_nodes.Count; n++)
+            {
+                Vector4 nodePos = rootGraph.m_positions[n];
+                if (!xMask)
+                    nodePos.X = 0f;
+                if (!yMask)
+                    nodePos.Y = 0f;
+                if (!zMask)
+                    nodePos.Z = 0f;
+
+                float minDist = float.MaxValue;
+                int streamableNPair = -1;
+                Vector4 streamableNodePairPos = new Vector4();
+                for (int streamableN = 0; streamableN < streamableGraph.m_nodes.Count; streamableN++)
+                {
+                    Vector4 streamableNodePos = streamableGraph.m_positions[streamableN];
+                    if (!xMask)
+                        streamableNodePos.X = 0f;
+                    if (!yMask)
+                        streamableNodePos.Y = 0f;
+                    if (!zMask)
+                        streamableNodePos.Z = 0f;
+
+                    float dist = (nodePos - (streamableNodePos + streamableOriginVec4 - rootOriginVec4)).Length();
+
+                    if (dist < minDist)
+                    {
+                        streamableNPair = streamableN;
+                        streamableNodePairPos = streamableNodePos;
+                        minDist = dist;
+                    }
+                }
+
+                if (streamableNPair != -1)
+                {
+                    graphStreamingSet.m_graphConnections.Add(new hkaiStreamingSetGraphConnection()
+                    {
+                        m_nodeIndex = n,
+                        m_oppositeNodeIndex = streamableNPair,
+                        m_edgeCost = CalcEdgeCost(nodePos, streamableNodePairPos),
+                        m_edgeData = 0u
+                    });
+                }
+            }
+
+            rootGraph.m_streamingSets[index] = graphStreamingSet;
+            root.m_namedVariants[1].m_variant = rootGraph;
+
+            return root;
+        }
+
+        private class FaceEdgePair
+        {
+            public int FaceIdx;
+            public int EdgeIdx;
+        }
+
+        public static hkRootLevelContainer UpdateStreamingSetOld(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        {
             // A little nicer to work with.
             Vector4 rootOriginV4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1);
             Vector4 streamableOriginV4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1);
@@ -716,6 +1225,18 @@ namespace HKX2Builders
                 });
             }
 
+            ((hkaiDirectedGraphExplicitCost)root.m_namedVariants[1].m_variant).m_streamingSets[index].m_graphConnections.Clear();
+            foreach (var graphConnection in ((hkaiDirectedGraphExplicitCost)streamable.m_namedVariants[1].m_variant).m_streamingSets[7 - index].m_graphConnections)
+            {
+                ((hkaiDirectedGraphExplicitCost)root.m_namedVariants[1].m_variant).m_streamingSets[index].m_graphConnections.Add(new hkaiStreamingSetGraphConnection()
+                {
+                    m_nodeIndex = graphConnection.m_oppositeNodeIndex,
+                    m_oppositeNodeIndex = graphConnection.m_nodeIndex,
+                    m_edgeCost = graphConnection.m_edgeCost,
+                    m_edgeData = graphConnection.m_edgeData
+                });
+            }
+
             return root;
         }
 
@@ -1077,12 +1598,12 @@ namespace HKX2Builders
                     }
                 }
             }
+        }
 
-            System.Half CalcEdgeCost(Vector4 self, Vector4 target)
-            {
-                Vector4 vec = target - self;
-                return (System.Half)(vec.Length() / 20f /*+ (vec.Y * config.CostYScale)*/);
-            }
+        private static System.Half CalcEdgeCost(Vector4 self, Vector4 target)
+        {
+            Vector4 vec = target - self;
+            return (System.Half)(vec.Length() / 20f /*+ (vec.Y * config.CostYScale)*/);
         }
 
         struct IndexedPoint : IPoint
