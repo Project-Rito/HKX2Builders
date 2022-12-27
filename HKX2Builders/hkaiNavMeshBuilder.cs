@@ -14,35 +14,76 @@ namespace HKX2Builders
             return (hkaiNavMesh)BuildRoot(config, verts, indices).m_namedVariants[0].m_variant;
         }
 
-        public static hkRootLevelContainer BuildRoot(Config config, List<Vector3> verts, List<int> indices)
+        public static void Configure(Config config)
         {
-            var root = new hkRootLevelContainer();
-
             NavMeshNative.SetNavmeshBuildParams(
                 config.CellSize, config.CellHeight,
                 config.WalkableSlopeAngle, config.WalkableHeight,
                 config.WalkableClimb, config.WalkableRadius,
                 config.MinRegionArea);
+        }
 
-            if (!NavMeshNative.BuildNavmeshForMesh(
-                verts.ToArray(), verts.Count, indices.ToArray(), indices.Count))
-                throw new Exception("Couldn't build Navmesh!");
+        public static bool AddGeometry(List<Vector3> verts, List<int> indices, Vector3 origin)
+        {
+            Vector3[] offsetVerts = verts.ToArray();
+            for (int i = 0; i < offsetVerts.Length; i++)
+                offsetVerts[i] = offsetVerts[i] + origin;
 
-            var vcount = NavMeshNative.GetMeshVertCount();
-            var icount = NavMeshNative.GetMeshTriCount();
+            if (!NavMeshNative.AddTileForMesh(offsetVerts, offsetVerts.Length, indices.ToArray(), indices.Count))
+                return false;
+            return true;
+        }
+        public static bool ClearGeometry()
+        {
+            NavMeshNative.ClearTiles();
+            return true;
+        }
+
+        public static bool Merge()
+        {
+            if (!NavMeshNative.MergeTiles())
+                return false;
+            return true;
+        }
+
+        public static bool Cut(Vector3 tileSize, Vector3 areaMin, Vector3 areaMax)
+        {
+            int nvp = NavMeshNative.GetMergedMeshMaxVertsPerPoly();
+            int vcount = NavMeshNative.GetMergedMeshVertCount();
+            int pcount = NavMeshNative.GetMergedMeshPolyCount();
+
+            ushort[] bverts = new ushort[vcount * 3];
+            ushort[] bindices = new ushort[pcount * nvp * 2];
+            Vector3[] vbverts = new Vector3[vcount];
+            NavMeshNative.GetMergedMeshVerts(bverts);
+            NavMeshNative.GetMergedMeshPolys(bindices);
+
+            ushort[] bregs = new ushort[pcount];
+            NavMeshNative.GetMergedMeshRegions(bregs);
+
+            return false;
+        }
+
+        public static hkRootLevelContainer BuildRoot(Config config, List<Vector3> verts, List<int> indices)
+        {
+            var root = new hkRootLevelContainer();
+
+            int nvp = NavMeshNative.GetMergedMeshMaxVertsPerPoly();
+            var vcount = NavMeshNative.GetMergedMeshVertCount();
+            var icount = NavMeshNative.GetMergedMeshPolyCount();
             if (vcount == 0 || icount == 0) throw new Exception("Resulting Navmesh is empty!");
 
             var bverts = new ushort[vcount * 3];
-            var bindices = new ushort[icount * 3 * 2];
+            var bindices = new ushort[icount * nvp * 2];
             var vbverts = new Vector3[vcount];
-            NavMeshNative.GetMeshVerts(bverts);
-            NavMeshNative.GetMeshTris(bindices);
+            NavMeshNative.GetMergedMeshVerts(bverts);
+            NavMeshNative.GetMergedMeshPolys(bindices);
 
             var bregs = new ushort[icount];
-            NavMeshNative.GetMeshRegions(bregs);
+            NavMeshNative.GetMergedMeshRegions(bregs);
 
             var bounds = new Vector3[2];
-            NavMeshNative.GetBoundingBox(bounds);
+            //NavMeshNative.GetBoundingBox(bounds);
 
             var navMesh = new hkaiNavMesh
             {
@@ -85,12 +126,12 @@ namespace HKX2Builders
                 vbverts[i] = vert;
             }
 
-            for (var t = 0; t < bindices.Length / 2; t += 3)
+            for (var t = 0; t < bindices.Length / 2; t += nvp)
             {
                 navMesh.m_faces.Add(
                     new hkaiNavMeshFace
                     {
-                        m_clusterIndex = (short)bregs[t / 3],
+                        m_clusterIndex = (short)bregs[t / nvp],
                         m_numEdges = 3,
                         m_startEdgeIndex = navMesh.m_edges.Count,
                         m_startUserEdgeIndex = -1,
@@ -103,11 +144,11 @@ namespace HKX2Builders
                     var e = new hkaiNavMeshEdge
                     {
                         m_a = bindices[t * 2 + i],
-                        m_b = bindices[t * 2 + ((i + 1) % 3)],
+                        m_b = bindices[t * 2 + ((i + 1) % nvp)],
                         m_flags = EdgeFlagBits.EDGE_ORIGINAL
                     };
                     // Record adjacency
-                    if (bindices[t * 2 + 3 + i] == 0xFFFF)
+                    if (bindices[t * 2 + nvp + i] == 0xFFFF)
                     {
                         // No adjacency
                         e.m_oppositeEdge = 0xFFFFFFFF;
@@ -116,13 +157,13 @@ namespace HKX2Builders
                     }
                     else
                     {
-                        e.m_oppositeFace = bindices[t * 2 + 3 + i];
+                        e.m_oppositeFace = bindices[t * 2 + nvp + i];
                         // Find the edge that has this face as an adjacency
-                        for (int j = 0; j < 3; j++)
+                        for (int j = 0; j < nvp; j++)
                         {
-                            var edge = bindices[t * 2 + 3 + i] * 6 + 3 + j;
-                            if (bindices[edge] == t / 3)
-                                e.m_oppositeEdge = (uint)bindices[t * 2 + 3 + i] * 3 + (uint)j;
+                            var edge = bindices[t * 2 + nvp + i] * 6 + nvp + j;
+                            if (bindices[edge] == t / nvp)
+                                e.m_oppositeEdge = (uint)bindices[t * 2 + nvp + i] * (uint)nvp + (uint)j;
                         }
                     }
 
@@ -139,7 +180,7 @@ namespace HKX2Builders
 
             // Next step: build a bvh
             var shortIndices = new uint[bindices.Length / 2];
-            for (int i = 0; i < bindices.Length / 2; i += 3)
+            for (int i = 0; i < bindices.Length / 2; i += nvp)
             {
                 shortIndices[i] = bindices[i * 2];
                 shortIndices[i + 1] = bindices[i * 2 + 1];
@@ -231,6 +272,9 @@ namespace HKX2Builders
 
         private static hkRootLevelContainer BuildNavmeshStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
         {
+            return root;
+
+
             // Useful vector stuff
             Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
             Vector4 streamableOriginVec4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1f);

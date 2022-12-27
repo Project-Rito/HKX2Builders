@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "HKX2Builders": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}
