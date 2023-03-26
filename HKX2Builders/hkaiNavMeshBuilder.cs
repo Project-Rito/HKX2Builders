@@ -9,68 +9,227 @@ namespace HKX2Builders
 {
     public static class hkaiNavMeshBuilder
     {
-        public static hkaiNavMesh Build(Config config, List<Vector3> verts, List<int> indices)
-        {
-            return (hkaiNavMesh)BuildRoot(config, verts, indices).m_namedVariants[0].m_variant;
-        }
+        //public static hkaiNavMesh Build(Config config, List<Vector3> verts, List<int> indices)
+        //{
+        //    return (hkaiNavMesh)BuildRoot(config, verts, indices).m_namedVariants[0].m_variant;
+        //}
 
-        public static void Configure(Config config)
+        private const float TILE_HEIGHT = 5000;
+        private const float TILE_WIDTH = 250;
+
+        public static void Configure(NavmeshBuilderConfig config)
         {
             NavMeshNative.SetNavmeshBuildParams(
                 config.CellSize, config.CellHeight,
                 config.WalkableSlopeAngle, config.WalkableHeight,
                 config.WalkableClimb, config.WalkableRadius,
-                config.MinRegionArea);
+                config.MinRegionArea, config.DetailSampleDist, config.DetailSampleMaxError);
         }
 
-        public static bool AddGeometry(List<Vector3> verts, List<int> indices, Vector3 origin)
+        public static bool BuildTileForMesh(List<Vector3> verts, List<int> indices, int tx, int ty, Vector3 origin)
         {
             Vector3[] offsetVerts = verts.ToArray();
             for (int i = 0; i < offsetVerts.Length; i++)
                 offsetVerts[i] = offsetVerts[i] + origin;
 
-            if (!NavMeshNative.AddTileForMesh(offsetVerts, offsetVerts.Length, indices.ToArray(), indices.Count))
+            if (!NavMeshNative.BuildTileForMesh(offsetVerts, offsetVerts.Length, indices.ToArray(), indices.Count, tx, ty, origin))
                 return false;
             return true;
         }
+
+        public static bool AddPrebuiltTile(hkaiNavMesh navmesh, int tx, int ty, Vector3 origin)
+        {
+            Vector3[] verts = navmesh.m_vertices.Select(x => new Vector3(x.X, x.Y, x.Z)).ToArray();
+            uint vcount = (uint)navmesh.m_vertices.Count;
+            uint nvp = 0;
+            foreach (hkaiNavMeshFace face in navmesh.m_faces)
+            {
+                if (face.m_numEdges > nvp)
+                    nvp = (uint)face.m_numEdges;
+            }
+            uint icount = (uint)(nvp * navmesh.m_faces.Count); // Minor optimization to have this data here for capacity
+            List<uint> indices = new List<uint>((int)icount);
+            List<uint> neighbors = new List<uint>((int)icount);
+            foreach (hkaiNavMeshFace face in navmesh.m_faces)
+            {
+                for (int i = 0; i < nvp; i++)
+                {
+                    if (i < face.m_numEdges)
+                    {
+                        hkaiNavMeshEdge edge = navmesh.m_edges[i + face.m_startEdgeIndex];
+                        indices.Add((uint)edge.m_a);
+                        neighbors.Add(edge.m_oppositeFace);
+                    }
+                    else
+                    {
+                        indices.Add(0xFFFF);
+                        neighbors.Add(0xFFFF);
+                    }
+                }
+            }
+
+            if (!NavMeshNative.AddPrebuiltTile(verts, vcount, indices.ToArray(), neighbors.ToArray(), icount, nvp, tx, ty, origin))
+                return false;
+            return true;
+        }
+
         public static bool ClearGeometry()
         {
             NavMeshNative.ClearTiles();
             return true;
         }
 
-        public static bool Merge()
+        public static hkaiNavMesh Build(int tx, int ty)
         {
-            if (!NavMeshNative.MergeTiles())
-                return false;
-            return true;
+            Vector3[] bounds = new Vector3[2];
+            NavMeshNative.GetBoundingBox(tx, ty, bounds);
+            bounds[0].X -= tx * TILE_WIDTH;
+            bounds[0].Z -= ty * TILE_WIDTH;
+            bounds[1].X -= tx * TILE_WIDTH;
+            bounds[1].Z -= ty * TILE_WIDTH;
+
+            var navmesh = new hkaiNavMesh
+            {
+                m_faces = new List<hkaiNavMeshFace>(),
+                m_edges = new List<hkaiNavMeshEdge>(),
+                m_vertices = new List<Vector4>(),
+                m_streamingSets = Enumerable.Repeat(
+                    new hkaiStreamingSet()
+                    {
+                        m_thisUid = 0,
+                        m_oppositeUid = 0,
+                        m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                        m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                        m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+                    }, 8).ToList(),
+                m_faceData = new List<int>(),
+                m_edgeData = new List<int>(),
+                m_faceDataStriding = 1,
+                m_edgeDataStriding = 1,
+                m_flags = NavMeshFlagBits.MESH_NONE,
+                m_aabb = new hkAabb
+                {
+                    m_min = new Vector4(bounds[0].X, bounds[0].Y, bounds[0].Z, 1.0f),
+                    m_max = new Vector4(bounds[1].X, bounds[1].Y, bounds[1].Z, 1.0f)
+                },
+                m_erosionRadius = 0.0f,
+                m_userData = 0
+            };
+
+            var vCount = NavMeshNative.GetVertCount(tx, ty);
+
+            Vector3[] verts = new Vector3[vCount];
+            NavMeshNative.GetVerts(tx, ty, verts);
+            for (int i = 0; i < verts.Length; i++)
+                verts[i] = verts[i] - new Vector3(tx * TILE_WIDTH, 0, ty * TILE_WIDTH);
+            foreach (Vector3 vert in verts)
+                navmesh.m_vertices.Add(new Vector4(vert.X, vert.Y, vert.Z, 0f));
+
+            var pCount = NavMeshNative.GetPolyCount(tx, ty);
+
+            for (uint polyIndex = 0; polyIndex < pCount; polyIndex++)
+            {
+                var pVCount = NavMeshNative.GetPolyVertCount(tx, ty, polyIndex);
+                ushort[] polyVerts = new ushort[pVCount];
+                NavMeshNative.GetPolyVerts(tx, ty, polyVerts, polyIndex);
+
+                //ushort[] polyNeis = new ushort[pVCount];
+                //NavMeshNative.GetPolyNeighborInfo(tx, ty, polyNeis, polyIndex);
+
+                navmesh.m_faces.Add(new hkaiNavMeshFace()
+                {
+                    m_clusterIndex = 0, // TODO: Figure out how to find this from new navmesh data.
+                    m_numEdges = pVCount,
+                    m_startEdgeIndex = navmesh.m_edges.Count,
+                    m_startUserEdgeIndex = -1,
+                    m_padding = 0xCDCD
+                });
+                navmesh.m_faceData.Add(unchecked((int)0b01111111111111110000000000000000));
+
+                for (uint polyVertIndex = 0; polyVertIndex < pVCount; polyVertIndex++)
+                {
+                    hkaiNavMeshEdge edge = new hkaiNavMeshEdge()
+                    {
+                        m_a = polyVerts[polyVertIndex],
+                        m_b = polyVerts[(polyVertIndex + 1) % pVCount], // % to wrap around to beginning of poly vertices if current index is the last index
+                        m_flags = EdgeFlagBits.EDGE_ORIGINAL,
+                        //m_oppositeFace = (polyNeis[polyVertIndex] & 0x8000) != 0 || polyNeis[polyVertIndex] == 0 ? 0xFFFFFFFF : (uint)(polyNeis[polyVertIndex] - 1)
+                    };
+
+                    // Find opposite edge
+                    //if (edge.m_oppositeFace == 0xFFFFFFFF)
+                    //{
+                    //    edge.m_oppositeEdge = 0xFFFFFFFF;
+                    //    navmesh.m_faceData[navmesh.m_faceData.Count - 1] |= unchecked((int)0b10000000000000000000000000000000);
+                    //}
+
+                    navmesh.m_edges.Add(edge);
+                    navmesh.m_edgeData.Add(0);
+                }
+            }
+
+            for (int f1 = 0; f1 < navmesh.m_faces.Count; f1++)
+            {
+                hkaiNavMeshFace face1 = navmesh.m_faces[f1];
+                for (int e1 = face1.m_startEdgeIndex; e1 < face1.m_startEdgeIndex + face1.m_numEdges; e1++)
+                {
+                    hkaiNavMeshEdge edge1 = navmesh.m_edges[e1];
+
+                    edge1.m_oppositeEdge = 0xFFFFFFFF; // Default for if we can't find a matching edge
+                    edge1.m_oppositeFace = 0xFFFFFFFF; // Default for if we can't find a matching edge
+
+                    for (int f2 = 0; f2 < navmesh.m_faces.Count; f2++)
+                    {
+                        if (f1 == f2)
+                            continue; // Don't want to match this up with itself.
+
+                        hkaiNavMeshFace face2 = navmesh.m_faces[f2];
+                        for (int e2 = face2.m_startEdgeIndex; e2 < face2.m_startEdgeIndex + face2.m_numEdges; e2++)
+                        {
+                            hkaiNavMeshEdge edge2 = navmesh.m_edges[e2];
+                            if ((navmesh.m_vertices[edge1.m_a] == navmesh.m_vertices[edge2.m_a] && navmesh.m_vertices[edge1.m_b] == navmesh.m_vertices[edge2.m_b]) || (navmesh.m_vertices[edge1.m_a] == navmesh.m_vertices[edge2.m_b] && navmesh.m_vertices[edge1.m_b] == navmesh.m_vertices[edge2.m_a]))
+                            {
+                                edge1.m_oppositeEdge = (uint)e2;
+                                edge1.m_oppositeFace = (uint)f2;
+                            }
+                        }
+                    }
+
+                    navmesh.m_edges[e1] = edge1;
+                }
+            }
+
+            /*
+            // Update edge adjacency, easier now that its all in the navmesh structure
+            foreach (hkaiNavMeshEdge edge in navmesh.m_edges) {
+                if (edge.m_oppositeFace != 0xFFFFFFFF)
+                {
+                    hkaiNavMeshFace oppositeFace = navmesh.m_faces[(int)edge.m_oppositeFace];
+                    
+                    for (int oe = oppositeFace.m_startEdgeIndex; oe < oppositeFace.m_startEdgeIndex + oppositeFace.m_numEdges; oe++)
+                    {
+                        hkaiNavMeshEdge oppositeEdge = navmesh.m_edges[oe];
+
+                        if ((oppositeEdge.m_a == edge.m_a && oppositeEdge.m_b == edge.m_b) ||
+                            (oppositeEdge.m_a == edge.m_b && oppositeEdge.m_b == edge.m_a))
+                            edge.m_oppositeEdge = (uint)oe;
+
+                    }
+                }
+            }
+            */
+
+            return navmesh;
         }
 
-        public static bool Cut(Vector3 tileSize, Vector3 areaMin, Vector3 areaMax)
-        {
-            int nvp = NavMeshNative.GetMergedMeshMaxVertsPerPoly();
-            int vcount = NavMeshNative.GetMergedMeshVertCount();
-            int pcount = NavMeshNative.GetMergedMeshPolyCount();
-
-            ushort[] bverts = new ushort[vcount * 3];
-            ushort[] bindices = new ushort[pcount * nvp * 2];
-            Vector3[] vbverts = new Vector3[vcount];
-            NavMeshNative.GetMergedMeshVerts(bverts);
-            NavMeshNative.GetMergedMeshPolys(bindices);
-
-            ushort[] bregs = new ushort[pcount];
-            NavMeshNative.GetMergedMeshRegions(bregs);
-
-            return false;
-        }
-
-        public static hkRootLevelContainer BuildRoot(Config config, List<Vector3> verts, List<int> indices)
+        /*
+        public static hkRootLevelContainer BuildRoot(Config config, List<Vector3> verts, List<int> indices, int tx, int ty)
         {
             var root = new hkRootLevelContainer();
 
-            int nvp = NavMeshNative.GetMergedMeshMaxVertsPerPoly();
-            var vcount = NavMeshNative.GetMergedMeshVertCount();
-            var icount = NavMeshNative.GetMergedMeshPolyCount();
+            int nvp = NavMeshNative.GetMaxVertsPerPoly(tx, ty);
+            var vcount = NavMeshNative.GetVertCount(tx, ty);
+            var icount = NavMeshNative.GetPolyCount(tx, ty);
             if (vcount == 0 || icount == 0) throw new Exception("Resulting Navmesh is empty!");
 
             var bverts = new ushort[vcount * 3];
@@ -83,7 +242,7 @@ namespace HKX2Builders
             NavMeshNative.GetMergedMeshRegions(bregs);
 
             var bounds = new Vector3[2];
-            //NavMeshNative.GetBoundingBox(bounds);
+            NavMeshNative.GetBoundingBox(bounds);
 
             var navMesh = new hkaiNavMesh
             {
@@ -251,30 +410,175 @@ namespace HKX2Builders
 
             return root;
         }
-
-        public static hkRootLevelContainer UpdateStreamingSets(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer[] streamables, Vector3[] streamableOrigins, Config config)
+        */
+        public static hkRootLevelContainer UpdateStreamingSets(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer[] streamables, Vector3[] streamableOrigins, NavmeshBuilderConfig config)
         {
             for (int i = 0; i < streamables.Length; i++) {
-                root = UpdateStreamingSet(root, rootOrigin, streamables[i], streamableOrigins[i], i, config);
+                //root = UpdateStreamingSet(root, rootOrigin, streamables[i], streamableOrigins[i], i, config);
             }
 
             return root;
         }
 
-        public static hkRootLevelContainer UpdateStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        public static hkRootLevelContainer UpdateStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
         {
-            root = BuildNavmeshStreamingSet(root, rootOrigin, streamable, streamableOrigin, index, config);
+            root = UpdateNavmeshStreamingSet(root, rootOrigin, streamable, streamableOrigin, index, config);
 
-            root = BuildGraphStreamingSet(root, rootOrigin, streamable, streamableOrigin, index, config);
+            root = BuildGraphStreamingSetOld(root, rootOrigin, streamable, streamableOrigin, index, config);
 
             return root;
         }
 
-        private static hkRootLevelContainer BuildNavmeshStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        private static hkRootLevelContainer UpdateNavmeshStreamingSet(hkRootLevelContainer thisRoot, Vector3 thisOrigin, hkRootLevelContainer streamableRoot, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
         {
-            return root;
+            hkaiNavMesh thisNavmesh = (hkaiNavMesh)thisRoot.m_namedVariants[0].m_variant;
+            hkaiNavMesh streamableNavmesh = (hkaiNavMesh)streamableRoot.m_namedVariants[0].m_variant;
 
+            int thisTx = (int)(thisOrigin.X / 250f);
+            int thisTy = (int)(thisOrigin.Z / 250f);
+            int streamableTx = (int)(streamableOrigin.X / 250f);
+            int streamableTy = (int)(streamableOrigin.Z / 250f);
 
+            hkaiStreamingSet streamingSet = new hkaiStreamingSet()
+            {
+                m_thisUid = Convert.ToUInt32(thisRoot.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_oppositeUid = Convert.ToUInt32(streamableRoot.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+            };
+
+            for (int polyIndex = 0; polyIndex < thisNavmesh.m_faces.Count; polyIndex++)
+            {
+                uint polyLinkCount = NavMeshNative.GetPolyLinkCount(thisTx, thisTy, (uint)polyIndex);
+                if (polyLinkCount > 0)
+                { 
+                    NavMeshNative.PolyTileLink[] polyLinks = new NavMeshNative.PolyTileLink[polyLinkCount];
+                    NavMeshNative.GetPolyLinks(thisTx, thisTy, polyLinks, (uint)polyIndex);
+
+                    foreach (NavMeshNative.PolyTileLink polyLink in polyLinks) {
+                        if (polyLink.DestTileX == streamableTx && polyLink.DestTileY == streamableTy)
+                        {
+                            streamingSet.m_meshConnections.Add(new hkaiStreamingSetNavMeshConnection()
+                            {
+                                m_edgeIndex = thisNavmesh.m_faces[(int)polyLink.SrcPolyIndex].m_startEdgeIndex + (int)polyLink.SrcEdgeIndex,
+                                m_faceIndex = (int)polyLink.SrcPolyIndex,
+                                m_oppositeEdgeIndex = streamableNavmesh.m_faces[(int)polyLink.DestPolyIndex].m_startEdgeIndex + (int)polyLink.DestEdgeIndex,
+                                m_oppositeFaceIndex = (int)polyLink.DestPolyIndex
+                            });
+                        }
+                    }
+                }
+            }
+            
+
+            thisNavmesh.m_streamingSets[index] = streamingSet;
+            thisRoot.m_namedVariants[0].m_variant = thisNavmesh;
+
+            return thisRoot;
+        }
+
+        private static hkRootLevelContainer BuildNavmeshStreamingSet(hkRootLevelContainer thisRoot, Vector3 thisOrigin, hkRootLevelContainer streamableRoot, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
+        {
+            hkaiNavMesh thisNavmesh = (hkaiNavMesh)thisRoot.m_namedVariants[0].m_variant;
+            hkaiNavMesh streamableNavmesh = (hkaiNavMesh)streamableRoot.m_namedVariants[0].m_variant;
+
+            hkaiStreamingSet streamingSet = new hkaiStreamingSet()
+            {
+                m_thisUid = Convert.ToUInt32(thisRoot.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_oppositeUid = Convert.ToUInt32(streamableRoot.m_namedVariants[0].m_name.Split("/")[1].Split(",")[0], 16),
+                m_meshConnections = new List<hkaiStreamingSetNavMeshConnection>(0),
+                m_graphConnections = new List<hkaiStreamingSetGraphConnection>(0),
+                m_volumeConnections = new List<hkaiStreamingSetVolumeConnection>(0)
+            };
+
+            for (int tf = 0; tf < thisNavmesh.m_faces.Count; tf++)
+            {
+                hkaiNavMeshFace thisFace = thisNavmesh.m_faces[tf];
+
+                for (int te = thisFace.m_startEdgeIndex; te < thisFace.m_startEdgeIndex + thisFace.m_numEdges; te++)
+                {
+                    hkaiNavMeshEdge thisEdge = thisNavmesh.m_edges[te];
+
+                    if (thisEdge.m_oppositeEdge != 0xFFFFFFFF) // Restrict search to boundary edges
+                        continue;
+
+                    Vector4 thisA = thisNavmesh.m_vertices[thisEdge.m_a];
+                    Vector4 thisB = thisNavmesh.m_vertices[thisEdge.m_b];
+                    Vector4 thisMid = (thisA + thisB) / 2;
+                    thisA.X += thisOrigin.X;
+                    thisA.Y += thisOrigin.Y;
+                    thisA.Z += thisOrigin.Z;
+                    thisB.X += thisOrigin.X;
+                    thisB.Y += thisOrigin.Y;
+                    thisB.Z += thisOrigin.Z;
+                    thisMid.X += thisOrigin.X;
+                    thisMid.Y += thisOrigin.Y;
+                    thisMid.Z += thisOrigin.Z;
+
+                    thisNavmesh.m_vertices[thisEdge.m_a] = new Vector4(thisNavmesh.m_vertices[thisEdge.m_a].X, 500, thisNavmesh.m_vertices[thisEdge.m_a].Z, thisNavmesh.m_vertices[thisEdge.m_a].W);
+                    thisNavmesh.m_vertices[thisEdge.m_b] = new Vector4(thisNavmesh.m_vertices[thisEdge.m_b].X, 500, thisNavmesh.m_vertices[thisEdge.m_b].Z, thisNavmesh.m_vertices[thisEdge.m_b].W);
+
+                    float min = float.MaxValue;
+                    int oppositeEdgeIndex = -1;
+                    int oppositeFaceIndex = -1;
+
+                    for (int sf = 0; sf < streamableNavmesh.m_faces.Count; sf++)
+                    {
+                        hkaiNavMeshFace streamableFace = streamableNavmesh.m_faces[sf];
+
+                        for (int se = streamableFace.m_startEdgeIndex; se < streamableFace.m_startEdgeIndex + streamableFace.m_numEdges; se++)
+                        {
+                            hkaiNavMeshEdge streamableEdge = streamableNavmesh.m_edges[se];
+
+                            if (streamableEdge.m_oppositeEdge != 0xFFFFFFFF)
+                                continue;
+
+                            Vector4 streamableA = streamableNavmesh.m_vertices[streamableEdge.m_a];
+                            Vector4 streamableB = streamableNavmesh.m_vertices[streamableEdge.m_b];
+                            Vector4 streamableMid = (streamableA + streamableB) / 2;
+                            streamableA.X += streamableOrigin.X;
+                            streamableA.Y += streamableOrigin.Y;
+                            streamableA.Z += streamableOrigin.Z;
+                            streamableB.X += streamableOrigin.X;
+                            streamableB.Y += streamableOrigin.Y;
+                            streamableB.Z += streamableOrigin.Z;
+                            streamableMid.X += streamableOrigin.X;
+                            streamableMid.Y += streamableOrigin.Y;
+                            streamableMid.Z += streamableOrigin.Z;
+
+                            float dist = (thisMid - streamableMid).Length();
+
+                            if (dist < min && dist <= config.StreamingSetSearchRadius)
+                            {
+                                min = dist;
+                                oppositeEdgeIndex = se;
+                                oppositeFaceIndex = sf;
+                            }
+                        }
+                    }
+
+                    if (oppositeEdgeIndex != -1)
+                    {
+                        streamingSet.m_meshConnections.Add(new hkaiStreamingSetNavMeshConnection()
+                        {
+                            m_edgeIndex = te,
+                            m_faceIndex = tf,
+                            m_oppositeEdgeIndex = oppositeEdgeIndex,
+                            m_oppositeFaceIndex = oppositeFaceIndex
+                        });
+                    }
+                }
+            }
+
+            thisNavmesh.m_streamingSets[index] = streamingSet;
+            thisRoot.m_namedVariants[0].m_variant = thisNavmesh;
+
+            return thisRoot;
+        }
+
+        private static hkRootLevelContainer BuildNavmeshStreamingSetOld(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
+        {
             // Useful vector stuff
             Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
             Vector4 streamableOriginVec4 = new Vector4(streamableOrigin.X, streamableOrigin.Y, streamableOrigin.Z, 1f);
@@ -527,7 +831,7 @@ namespace HKX2Builders
             return root;
         }
 
-        private static hkRootLevelContainer BuildNavmeshStreamingSetOld2(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        private static hkRootLevelContainer BuildNavmeshStreamingSetOld2(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
         {
             // Useful vector stuff
             Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
@@ -671,7 +975,7 @@ namespace HKX2Builders
             return root;
         }
 
-        private static hkRootLevelContainer BuildGraphStreamingSet(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        private static hkRootLevelContainer BuildGraphStreamingSetOld(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
         {
             // Useful vector stuff
             Vector4 rootOriginVec4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1f);
@@ -773,7 +1077,7 @@ namespace HKX2Builders
             public int EdgeIdx;
         }
 
-        public static hkRootLevelContainer UpdateStreamingSetOld(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, Config config)
+        public static hkRootLevelContainer UpdateStreamingSetOld(hkRootLevelContainer root, Vector3 rootOrigin, hkRootLevelContainer streamable, Vector3 streamableOrigin, int index, NavmeshBuilderConfig config)
         {
             // A little nicer to work with.
             Vector4 rootOriginV4 = new Vector4(rootOrigin.X, rootOrigin.Y, rootOrigin.Z, 1);
@@ -1285,7 +1589,7 @@ namespace HKX2Builders
         }
 
 
-        private static hkaiDirectedGraphExplicitCost BuildGraph(hkaiNavMesh navMesh, Config config, ushort[] regionsMapping)
+        private static hkaiDirectedGraphExplicitCost BuildGraph(hkaiNavMesh navMesh, NavmeshBuilderConfig config, ushort[] regionsMapping)
         {
             var graph = new hkaiDirectedGraphExplicitCost()
             {
@@ -1760,43 +2064,6 @@ namespace HKX2Builders
             public int GetHashCode(List<T> a)
             {
                 return a.GetHashCode();
-            }
-        }
-
-        public struct Config
-        {
-            public float CellSize;
-            public float CellHeight;
-            public float WalkableSlopeAngle;
-            public float WalkableHeight;
-            public float WalkableClimb;
-            public float WalkableRadius;
-            public int MinRegionArea;
-
-            public float CostYScale;
-            public int KMeansClusteringK;
-            //public float GraphMinGrouping;
-            //public float GraphEdgeRadius;
-            public float StreamingSetSearchRadius;
-
-            public static Config Default()
-            {
-                return new Config
-                {
-                    CellSize = 0.05f,
-                    CellHeight = 0.05f,
-                    WalkableSlopeAngle = 30.0f,
-                    WalkableHeight = 1.0f,
-                    WalkableClimb = 0.5f,
-                    WalkableRadius = 0.001f,
-                    MinRegionArea = 3,
-
-                    CostYScale = 2f,
-                    KMeansClusteringK = 30,
-                    //GraphMinGrouping = 8f,
-                    //GraphEdgeRadius = 0.5f,s
-                    StreamingSetSearchRadius = 2f,
-                };
             }
         }
     }
