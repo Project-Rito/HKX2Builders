@@ -12,7 +12,7 @@ namespace HKX2Builders
             float walkableRadius, int minRegionArea, float detailSampleDist, float detailSampleMaxError);
 
         [DllImport("libNavGen")]
-        public static extern bool BuildTileForMesh([In] Vector3[] verts, int vcount, [In] int[] indices, int icount, int tx, int ty, [In] Vector3 orig);
+        public static extern bool BuildTileForMesh([In] Vector3[] verts, int vcount, [In] int[] indices, int icount, int tx, int ty, [In] Vector3 orig, bool field);
 
         [DllImport("libNavGen")]
         public static extern bool AddPrebuiltTile([In] Vector3[] verts, uint vcount, [In] uint[] indices, [In] uint[] neighbors, uint icount, uint nvp, int tx, int ty, [In] Vector3 orig);

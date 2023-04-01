@@ -26,13 +26,13 @@ namespace HKX2Builders
                 config.MinRegionArea, config.DetailSampleDist, config.DetailSampleMaxError);
         }
 
-        public static bool BuildTileForMesh(List<Vector3> verts, List<int> indices, int tx, int ty, Vector3 origin)
+        public static bool BuildTileForMesh(List<Vector3> verts, List<int> indices, int tx, int ty, Vector3 origin, bool field)
         {
             Vector3[] offsetVerts = verts.ToArray();
             for (int i = 0; i < offsetVerts.Length; i++)
                 offsetVerts[i] = offsetVerts[i] + origin;
 
-            if (!NavMeshNative.BuildTileForMesh(offsetVerts, offsetVerts.Length, indices.ToArray(), indices.Count, tx, ty, origin))
+            if (!NavMeshNative.BuildTileForMesh(offsetVerts, offsetVerts.Length, indices.ToArray(), indices.Count, tx, ty, origin, field))
                 return false;
             return true;
         }
